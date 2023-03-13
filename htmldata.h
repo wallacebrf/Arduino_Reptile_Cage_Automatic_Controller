@@ -29,7 +29,7 @@ PROGMEM char const basic27[] ="/red.png";
 PROGMEM char const basic28[] ="/on.png";
 PROGMEM char const basic29[] ="/off.png";
 PROGMEM char const basic30[] ="<tr><td colspan=\"2\"><font color = \"red\"><b><center>Invalid Entry!</center></b></font></td></tr>";
-PROGMEM char const basic31[] ="2.0: 6/8/2016";
+PROGMEM char const basic31[] ="3.0: 3/8/2023 (experimental)";
 PROGMEM char const basic32[] =".";
 PROGMEM char const basic33[] ="  ";
 PROGMEM char const basic34[] =""
@@ -1160,5 +1160,4 @@ PROGMEM const int content_favicon_data[] = {
              0x00, 0x00, 0x80, 0x01, 0x00, 0x00, 0xC0, 0x03, 0x00, 0x00, 0xE0, 0x07, 0x00, 0x00, 0xF8, 0x1F, 0x00, 0x00
              };
              
-            
-
+           
