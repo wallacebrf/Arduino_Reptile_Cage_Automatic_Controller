@@ -1,3 +1,10 @@
+/*changelog
+3.0: 3/8/2023 (experimental)
+updated code to use latest ethernet library
+-> this library has built in DHCP and DNS. the old DHCP and DNS lookup features in prior code versions have been replaced
+->time server changed from NIST servers to google time servers
+*/
+
 /* system requires an SD card to load images off of, and to save logging data. copy the following files into the root of the SD card:
 red.png
 green.png
@@ -21,20 +28,19 @@ without these files, page1 "System Main" will not display correctly. */
 #include <avr/wdt.h>
 #include <Wire.h>
 #include <EthernetUdp.h>
-#include <EthernetDNS.h>
-#include <EthernetDHCP.h>
 #include "Wire.h"
 #include <SD.h>
+#include <Dns.h>
 
 /*********************************************************************************************************************
                                                       Create Global System Variables
 *********************************************************************************************************************/
+IPAddress ip;//byte ip[4];            //ip address of NTP server after the server URL is resolved into IP address. This is so an IP address does not need to be hard coded as recommended by the NTP servers
+byte localip[4];        //the local system IP, either local or DHCP generated depending on user preference
+byte dnsServerIp[4];      //system variable for the DNS server to use to resolve the NTP server URL. 
 #define DS1307_I2C_ADDRESS 0x68 //address of the RTC on the SPI bus
 byte second, minute, hour, dayOfWeek, dayOfMonth, month, year;
-byte ip[4];            //ip address of NTP server after the server URL is resolved into IP address. This is so an IP address does not need to be hard coded as recommended by the NTP servers
-byte mac[] = {0x00, 0xAA, 0xBB, 0xCC, 0xDE, 0x03 };    //MAC address of the local system
-//byte mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66 };    //MAC address of the local system
-byte localip[4];        //the local system IP, either local or DHCP generated depending on user preference
+byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };    //MAC address of the local system
 
 // Http header token delimiters
 //the purpose of these delimiters is so the code knows when to insert system variables into the outputted HTML code. any time these delimiters are found
@@ -47,8 +53,7 @@ const char *pStxDelimiter = "\002";    // STX - ASCII start of text character
 #define NTP_PACKET_SIZE 48 // NTP time stamp is in the first 48 bytes of the message
 byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
 EthernetUDP Udp;// A UDP instance to let us send and receive packets over UDP
-// substitute your DNS server ip address
-byte dnsServerIp[4];      //system variable for the DNS server to use to resolve the NTP server URL. 
+
 const char* ip_to_str(const uint8_t*);
 
 // declare tables for the images
@@ -66,6 +71,8 @@ const char * const http_uris[] PROGMEM = { http_uri1, http_uri2, http_uri3, http
 EthernetServer server(80);                          //start the instance of server on port 80
 
 EthernetClient mailclient;
+
+DNSClient dnClient;
 
 byte middle_temp_whole;                            //middle heater in tank whole temperature
 byte cold_side_temp_whole;                            //cold heater in tank whole temperature
@@ -231,11 +238,11 @@ double SD_USED_SPACE = 0;  //how many bytes of space is used on the card?
 byte data_log_enabled = 0;  //does the user want data logging on or off? 1 = on, 0 = off
 byte data_log_period = 10;  //how often does a sample get taken if data logging is enabled? 1 per 10, 20, 30, 40, 50, or 60 seconds?
 byte counter;                //msic variable used by data logging
-#define CSG1wirepin 38//22
-#define MSG1wirepin 44//24
-#define HSG1wirepin 42//26
-#define AA11wirepin 46//28
-#define AA21wirepin 48//30
+#define CSG1wirepin 38
+#define MSG1wirepin 44
+#define HSG1wirepin 42
+#define AA11wirepin 46
+#define AA21wirepin 48
 #define humidity1pin 14
 #define humidity2pin 15
 double last_time_data_saved = 0;
@@ -271,59 +278,18 @@ wdt_disable();
 //***********************************************/
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 void GET_NTP_TIME(int timezone)
 {
+  //get the IP address of the time server
+  if(dnClient.getHostByName("time.google.com",ip) == 1) {
+    Serial.print(F("time.google.com = "));
+    Serial.println(ip);
+  }else{ 
+    Serial.print(F("dns lookup failed"));
+  }
+ 
+  wdt_enable(WDTO_4S);
+  
   sendNTPpacket(); // send an NTP packet to a time server
   //wdt_reset();
     // wait to see if a reply is available
@@ -377,25 +343,6 @@ unsigned long sendNTPpacket(void)
   Udp.beginPacket(ip, 123); //NTP requests are to port 123
   Udp.write(packetBuffer,NTP_PACKET_SIZE);
   Udp.endPacket();
-}
-
-void GET_DNS_IP(void)
-{ 
-  char hostName[]= {'t','i','m','e','.','n','i','s','t','.','g','o','v','\0'};
-  byte ipAddr[4];
-
-    DNSError err = EthernetDNS.resolveHostName(hostName, ipAddr);
-
-    if (DNSSuccess == err) {
-      ip[0] = ipAddr[0];
-      ip[1] = ipAddr[1];
-      ip[2] = ipAddr[2];
-      ip[3] = ipAddr[3];
-    } else if (DNSTimedOut == err) {
-    } else if (DNSNotFound == err) {
-    } else {
-    }
-
 }
 
 // Just a utility function to nicely format an IP address.
@@ -673,12 +620,40 @@ void startethernet(void){
 *********************************************************************************************************************/
   if (usedhcp == 1){//use DHCP
     wdt_reset();
-    EthernetDHCP.begin(mac);
+    // start the Ethernet connection:
+
+    Serial.println(F("Initialize Ethernet with DHCP:"));
+
+    if (Ethernet.begin(mac) == 0) {
+
+      Serial.println(F("Failed to configure Ethernet using DHCP"));
+
+      if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+
+        Serial.println(F("Ethernet shield was not found.  Sorry, can't run without hardware. :("));
+
+      } else if (Ethernet.linkStatus() == LinkOFF) {
+
+        Serial.println(F("Ethernet cable is not connected. Please reset or power cycle"));
+
+      }
+
+      // no point in carrying on, so do nothing forevermore:
+
+      while (true) {
+
+        delay(10000);
+        Serial.println(F("Ethernet cable is not connected. Please reset or power cycle"));
+
+      }
+
+    }
+
     wdt_reset();
     //now that we have a DHCP lease, we need to save all the lease information so the rest of the system can use it
-    const byte* ipAddr = EthernetDHCP.ipAddress();
-    const byte* gatewayAddr = EthernetDHCP.gatewayIpAddress();
-    const byte* dnsAddr = EthernetDHCP.dnsIpAddress();
+    const byte* ipAddr = Ethernet.localIP();
+    const byte* gatewayAddr = Ethernet.gatewayIP();
+    const byte* dnsAddr = Ethernet.dnsServerIP();
     
     //local system IP address
     localip[0] = ipAddr[0];
@@ -705,16 +680,16 @@ void startethernet(void){
     dnsServerIp[3] = dnsAddr[3];
     Serial.println(F("A DHCP lease has been obtained."));
 
-    Serial.print(F("System IP address is "));
+    Serial.print(F("System IP address is: "));
     Serial.println(ip_to_str(ipAddr));
   
-    Serial.print(F("Gateway address is "));
+    Serial.print(F("Gateway address is: "));
     Serial.println(ip_to_str(gatewayAddr));
   
-    Serial.print(F("DNS IP address is "));
+    Serial.print(F("DNS IP address is: "));
     Serial.println(ip_to_str(dnsAddr));
     
-    Serial.print(F("Subnet Mask is "));
+    Serial.print(F("Subnet Mask is: "));
     Serial.println(ip_to_str(subnetmask));
   }else{      //do not use DHCP but use static settings defined by the user, saved in EEPROM
     localip[0] = EEPROM.read(LOCALIPADDREEPROMADDRPART1);
@@ -737,21 +712,31 @@ void startethernet(void){
     Ethernet.begin(mac, localip, dnsServerIp, gateway, subnetmask); 
     Serial.println(F("System is using Static Ethernet Settings."));
 
-    Serial.print(F("System IP address is "));
+    Serial.print(F("System IP address is: "));
     Serial.println(ip_to_str(localip));
   
-    Serial.print(F("Gateway address is "));
+    Serial.print(F("Gateway address is: "));
     Serial.println(ip_to_str(gateway));
   
-    Serial.print(F("DNS IP address is "));
+    Serial.print(F("DNS IP address is: "));
     Serial.println(ip_to_str(dnsServerIp));
     
-    Serial.print(F("Subnet Mask is "));
+    Serial.print(F("Subnet Mask is: "));
     Serial.println(ip_to_str(subnetmask));
   }
+  dnClient.begin(Ethernet.dnsServerIP());
 }
 
 void sendemail(void){
+  if(dnClient.getHostByName("smtp-server.wi.rr.com",ip) == 1) {
+    Serial.print(F("smtp-server.wi.rr.com = "));
+    Serial.println(ip);
+  }else{ 
+    Serial.print(F("dns lookup failed"));
+  }
+ 
+  wdt_enable(WDTO_4S);
+
   if (mailclient.connect(ip, 25)) {
     delay(1000); /* wait for a response */
     wdt_reset();
@@ -787,26 +772,6 @@ void sendemail(void){
     wdt_reset();
     mailclient.stop();
  }
-}
-
-void GET_DNS_IP_SMTP(void)
-{ 
-  //smtp-server.wi.rr.com
-  char hostName[] = {'s','m','t','p','-','s','e','r','v','e','r','.','w','i','.','r','r','.','c','o','m','\0'};
-  byte ipAddr[4];
-    
-    DNSError err = EthernetDNS.resolveHostName(hostName, ipAddr);
-
-    if (DNSSuccess == err) {
-      ip[0] = ipAddr[0];
-      ip[1] = ipAddr[1];
-      ip[2] = ipAddr[2];
-      ip[3] = ipAddr[3];
-    } else if (DNSTimedOut == err) {
-    } else if (DNSNotFound == err) {
-    } else {
-    }
-
 }
 
 TimeStamp calcDiff(TimeStamp now, const TimeStamp &future)
@@ -849,37 +814,6 @@ TimeStamp calcDiff(TimeStamp now, const TimeStamp &future)
     now.ss = sec_now % 60;
     return now;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -937,12 +871,12 @@ void setup()
   wdt_reset();
   usedhcp = EEPROM.read(USEDHCPEEPROMADDR);
   startethernet();
-  
+    
     Wire.begin();//needed to comunicate with the real time clock
     server.begin();//needed to set up the web-server
   
     Udp.begin(localPort);//activate the UDP system needed to access the online NTP servers
-    EthernetDNS.setDNSServer(dnsServerIp);  //start the DNS subsystems
+    //EthernetDNS.setDNSServer(dnsServerIp);  //start the DNS subsystems
     wdt_reset();
     
     //**********************************************************
@@ -970,13 +904,15 @@ void setup()
   //that way, if no SD card is fond, we can re-initilize those registers back to their proper values  
   uint8_t spcr = SPCR;
   uint8_t spsr = SPSR;
-  if (!card.init(0, 4)){
+  if (!card.init(0, 5)){ // SD chip select on pin 5
     SD_init_OK = 0;//SD card not initilized
+    Serial.print(F("NO SD Card"));
     //no SD card found, restore the SPI bus settings for full speed
     SPCR = spcr;
     SPSR = spsr;
     data_log_enabled =0;
   }else{
+    Serial.print(F("SD card found"));
     SD_init_OK = 1;//SD card initilized OK
     // initialize a FAT volume
     if (!volume.init(&card)){
@@ -997,6 +933,7 @@ void setup()
       }
     }
   }
+
   getDateDs1307(&second, &minute, &hour, &dayOfWeek, &dayOfMonth, &month, &year);//get current time from RTC
   systemstarttime.yy = year+2000;
   systemstarttime.mm = month;
@@ -1011,14 +948,32 @@ void setup()
 ***********************************************************************************************************************/
 void loop()
 {
+  if (usedhcp == 1){//use DHCP and maintain DHCP
+    switch (Ethernet.maintain()) {
+      case 1:
+        Serial.println(F("Error: renewed fail"));
+        break;
+      case 2:
+        Serial.println(F("Renewed success"));
+        Serial.print(F("My IP address: "));
+        Serial.println(Ethernet.localIP());
+        break;
+      case 3:
+        Serial.println(F("Error: rebind fail"));
+        break;
+      case 4:
+        Serial.println(F("Rebind success"));
+        Serial.print(F("My IP address: "));
+        Serial.println(Ethernet.localIP());
+        break;
+      default:
+        break;
+    }
+  }
   float humidity1sample1, humidity1sample2, humidity1sample3, humidity1sample4, humidity1sample5;//we want 5 samples of the humidity so we can average them for better accuracy
   float humidity2sample1, humidity2sample2, humidity2sample3, humidity2sample4, humidity2sample5;//we want 5 samples of the humidity so we can average them for better accuracy
   byte temp_whole, temp_fract, temp_status;
-  if (usedhcp == 1){
-    wdt_reset();
-    EthernetDHCP.maintain();//if the system is using DHCP, the lease needs to be renewed when it expires. so we need to keep askig the router for renewed DHCP info
-  }
-  wdt_reset();
+   wdt_reset();
    GETETHERNET();//called to check if any incoming clients are trying to conenct to the server
    wdt_reset();
    CONVERT_TEMP(MSG1wirepin, temp_whole, temp_fract, temp_status);
@@ -1077,8 +1032,6 @@ void loop()
        cold_side_status = 0;
        hot_side_status = 0;
        middle_status = 0;
-       GET_DNS_IP();//gets the IP address of the time servers. the IP address changes as the NTP system rotates between servers to reduce server load. this way no IP address is hard coded. we get a new IP address every time
-       wdt_reset();
        GET_NTP_TIME(TIMEZONE);//conencts to the NTP server using the configures system time zone and the IP address resolved previously
        wdt_reset();
        if (SETSECONDS != 0 && SETMINUTE != 0 && SETHOUR != 0){
@@ -1326,8 +1279,7 @@ void loop()
          file.close(); 
          wdt_reset();
        }
-     }
-     
+     } 
 }
 
 void GETETHERNET(void)
@@ -1455,8 +1407,6 @@ void CONVERT_TEMP(byte Sensor_PIN, byte & temp_whole, byte & temp_fract, byte & 
       ambient2_badsensordate.ss=second;
     }
     if (abs(((second + (minute*60UL) + (hour*3600UL) + (dayOfMonth*86400UL) + (month*2629743UL) + (year*31556926UL)) - last_time_email_sent)) >= 3600){
-           GET_DNS_IP_SMTP();
-           wdt_reset();
            sendemail();
            wdt_reset();
            last_time_email_sent = second + (minute*60UL) + (hour*3600UL) + (dayOfMonth*86400UL) + (month*2629743UL) + (year*31556926UL);
@@ -1510,8 +1460,6 @@ void CONVERT_TEMP(byte Sensor_PIN, byte & temp_whole, byte & temp_fract, byte & 
       ambient2_badsensordate.ss=second;
     }
     if (abs(((second + (minute*60UL) + (hour*3600UL) + (dayOfMonth*86400UL) + (month*2629743UL) + (year*31556926UL)) - last_time_email_sent)) >= 3600){
-           GET_DNS_IP_SMTP();
-           wdt_reset();
            sendemail();
            wdt_reset();
            last_time_email_sent = second + (minute*60UL) + (hour*3600UL) + (dayOfMonth*86400UL) + (month*2629743UL) + (year*31556926UL);
@@ -2049,7 +1997,6 @@ void sendPage(EthernetClient & client, int nUriIndex, BUFFER & requestContent, c
                     EEPROM.write(TIMEZONEEEPROMADDRSIGN, 0);
                   }
                   TIMEZONE = atoi(valueArray);
-                  GET_DNS_IP();
                   GET_NTP_TIME(TIMEZONE);
                   if (SETSECONDS != 0 && SETMINUTE != 0 && SETHOUR != 0){
                     setDateDs1307(SETSECONDS, SETMINUTE, SETHOUR, SETDAYOFWEEK, SETDAY, SETMONTH, SETYEAR);
@@ -2058,7 +2005,6 @@ void sendPage(EthernetClient & client, int nUriIndex, BUFFER & requestContent, c
               }else if (x == 6){
                 if (atoi(valueArray) == 1){
                   getDateDs1307(&second, &minute, &hour, &dayOfWeek, &dayOfMonth, &month, &year);
-                  GET_DNS_IP();
                   GET_NTP_TIME(TIMEZONE);
                 }
                   if (SETSECONDS != 0 && SETMINUTE != 0 && SETHOUR != 0){
@@ -2438,38 +2384,18 @@ void sendPage(EthernetClient & client, int nUriIndex, BUFFER & requestContent, c
   
       // send HTML header
     sendProgMemAsString(client, (char*)pgm_read_word(&(contents_main[CONT_TOP])));
-    //wdt_reset();
-    //sendUriContentByIndex(client, nUriIndex, requestContent, 0, CONT_TOP);
-  
+      
     // send menu
     sendProgMemAsString(client, (char*)pgm_read_word(&(contents_main[CONT_MENU])));
-    //wdt_reset();
-    //sendUriContentByIndex(client, nUriIndex, requestContent, 1, CONT_MENU);
-  
+      
     // send title
     sendProgMemAsString(client, (char*)pgm_read_word(&(contents_titles[nUriIndex])));
-    //wdt_reset();
-    //sendUriContentByIndex(client, nUriIndex, requestContent, 2, nUriIndex);
-  
+     
     // send the body for the requested page
     sendUriContentByIndex(client, nUriIndex, requestContent);
     //wdt_reset();
   
-    // Append the data sent in the original HTTP request
-    // send POST variables
- /*client.print("<br><br><br><br>");
- BUFFER valueArray;
- for (byte x = 1; x<=12; x++){
-            PROCESSREQUESTCONTENT(x, requestContent, valueArray);
-            client.print("The value of data field ");
-            client.print(x);
-            client.print(" is ");
-            client.print(atoi(valueArray));
-            client.print("<br>");
- }*/
-  //client.print(datastring);
-  //client.print("<br><br>")
-    
+   
     // send footer
     sendProgMemAsString(client,(char*)pgm_read_word(&(contents_main[CONT_FOOTER])));
   }
