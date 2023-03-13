@@ -21,4 +21,3 @@ const byte DAYS_IN_MONTH[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
 #define STRING_BUFFER_SIZE 256
 
 typedef char BUFFER[STRING_BUFFER_SIZE];
-
